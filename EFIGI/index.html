@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Galaxy map</title>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f8f9fa;
+    --border: #dee2e6;
+    --text: #212529;
+    --muted: #6c757d;
+    --accent: #1f77b4;
+    --sel: #d62728;
+    --nb: #1f77b4;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px; display: flex; flex-direction: column;
+  }
+  header {
+    padding: 10px 18px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #plot-area { flex: 1; min-width: 0; background: #000; }
+  aside {
+    width: 360px; flex: none; background: var(--panel);
+    border-left: 1px solid var(--border); padding: 16px; overflow-y: auto;
+  }
+  aside h2 {
+    font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted); margin: 0 0 8px;
+  }
+  .section + .section { margin-top: 20px; }
+  #empty { color: var(--muted); line-height: 1.5; }
+  .sel-head { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+  .sel-head img {
+    width: 96px; height: 96px; object-fit: cover; background: #000;
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  .sel-head .name { font-size: 16px; font-weight: 600; }
+  .sel-head .pos { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--border); }
+  td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { color: var(--muted); width: 40%; }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+  .grid img {
+    width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #000;
+    border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+  }
+  .grid img:hover { border-color: var(--accent); }
+  .note { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: 18px; }
+  @media (max-width: 900px) {
+    main { flex-direction: column; }
+    #plot-area { flex: none; height: 60vh; }
+    aside { width: 100%; border-left: none; border-top: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Galaxy map</h1>
+  <span class="sub" id="subtitle"></span>
+</header>
+<main>
+  <div id="plot-area"></div>
+  <aside>
+    <div class="section">
+      <h2>Selected galaxy</h2>
+      <div id="info"><div id="empty">Click a galaxy in the map to see its measured properties.</div></div>
+    </div>
+    <div class="section" id="nb-section" style="display:none">
+      <h2>25 nearest galaxies in PC1-PC2</h2>
+      <div class="grid" id="neighbors"></div>
+    </div>
+    <p class="note">
+      Each galaxy is placed on a grid at its PC1-PC2 position. Cells are moved
+      slightly to avoid overlap, so positions are approximate. Use the scroll
+      wheel to zoom and drag to pan.
+    </p>
+  </aside>
+</main>
+
+<script>
+const LABELS = {
+  T: 'T', A3: 'A<sub>3</sub>', C1: 'C<sub>1</sub>', sigma_psi: '&sigma;<sub>&psi;</sub>',
+  Ci: 'C<sub>i</sub>', Cm: 'C<sub>m</sub>', Co: 'C<sub>o</sub>',
+  Cd: 'C<sub>d</sub>', Ck: 'C<sub>k</sub>', H: 'H'
+};
+const fmt = v => (typeof v === 'number') ? v.toFixed(3) : v;
+
+fetch('galeria_data.json').then(r => r.json()).then(data => {
+  const rec = data.records;
+  const keys = Object.keys(rec);
+
+  document.getElementById('title').textContent = data.title;
+  document.title = data.title;
+  document.getElementById('subtitle').textContent =
+    data.sample + ', ' + data.n_galaxies + ' galaxies. Click a galaxy to select it.';
+
+  const trace = {
+    x: data.xs, y: data.ys, text: data.ids, mode: 'markers',
+    marker: { size: 14, opacity: 0 },
+    hovertemplate: '%{text}<extra></extra>'
+  };
+
+  const layout = {
+    margin: { l: 0, r: 0, t: 0, b: 0 },
+    plot_bgcolor: '#000', paper_bgcolor: '#000',
+    xaxis: { showgrid: false, zeroline: false, visible: false, range: [0, data.grid_x] },
+    yaxis: { showgrid: false, zeroline: false, visible: false, range: [0, data.grid_y],
+             scaleanchor: 'x', scaleratio: 1 },
+    images: [{
+      source: data.mosaic_base64, xref: 'x', yref: 'y',
+      x: 0, y: data.grid_y, sizex: data.grid_x, sizey: data.grid_y,
+      sizing: 'stretch', layer: 'below'
+    }],
+    annotations: [
+      { xref: 'paper', yref: 'paper', x: 0.01, y: 0.01, xanchor: 'left', yanchor: 'bottom',
+        text: data.col_x + ' \u2192', showarrow: false, font: { color: '#fff', size: 13 } },
+      { xref: 'paper', yref: 'paper', x: 0.01, y: 0.05, xanchor: 'left', yanchor: 'bottom',
+        text: data.col_y + ' \u2191', showarrow: false, font: { color: '#fff', size: 13 } }
+    ],
+    shapes: [],
+    hoverlabel: { bgcolor: '#fff', font: { color: '#000' } }
+  };
+
+  const config = {
+    responsive: true, displaylogo: false, scrollZoom: true,
+    modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'],
+    toImageButtonOptions: { format: 'png', filename: 'galaxy_map', scale: 3 }
+  };
+
+  const plot = document.getElementById('plot-area');
+  Plotly.newPlot(plot, [trace], layout, config);
+
+  const box = (key, color, width) => {
+    const [i, j] = key.split(',').map(Number);
+    return { type: 'rect', xref: 'x', yref: 'y', x0: i, x1: i + 1, y0: j, y1: j + 1,
+             line: { color: color, width: width }, fillcolor: 'rgba(0,0,0,0)' };
+  };
+
+  function select(key) {
+    const g = rec[key];
+    if (!g) return;
+
+    let rows = '';
+    data.properties.forEach(p => {
+      if (p in g) rows += '<tr><td>' + (LABELS[p] || p) + '</td><td>' + fmt(g[p]) + '</td></tr>';
+    });
+    document.getElementById('info').innerHTML =
+      '<div class="sel-head"><img src="' + g.img + '" alt="' + g.id + '">' +
+      '<div><div class="name">' + g.id + '</div>' +
+      '<div class="pos">' + data.col_x + ' = ' + g.x.toFixed(2) + '<br>' +
+      data.col_y + ' = ' + g.y.toFixed(2) + '</div></div></div>' +
+      '<table>' + rows + '</table>';
+
+    const d = keys.map(k => ({ k: k,
+      d: (rec[k].x - g.x) ** 2 + (rec[k].y - g.y) ** 2 }));
+    d.sort((a, b) => a.d - b.d);
+    const near = d.filter(o => o.k !== key).slice(0, 25);
+
+    document.getElementById('neighbors').innerHTML = near.map(o =>
+      '<img src="' + rec[o.k].img + '" title="' + rec[o.k].id + '" data-key="' + o.k + '">'
+    ).join('');
+    document.getElementById('nb-section').style.display = 'block';
+
+    Plotly.relayout(plot, { shapes:
+      near.map(o => box(o.k, '#4da3ff', 1)).concat([box(key, '#d62728', 3)]) });
+  }
+
+  plot.on('plotly_click', ev => {
+    const pt = ev.points[0];
+    select(Math.floor(pt.x) + ',' + Math.floor(pt.y));
+  });
+  document.getElementById('neighbors').addEventListener('click', e => {
+    if (e.target.dataset.key) select(e.target.dataset.key);
+  });
+});
+</script>
+</body>
+</html>
